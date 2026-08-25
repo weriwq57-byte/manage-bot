@@ -43,7 +43,12 @@ async def _apply(request: web.Request) -> web.Response:
     if not name or not phone:
         return web.json_response({"error": "name and phone required"}, status=400)
 
-    lead_id = storage.create_lead(name, phone, who, subject, source="web")
+    # Дедупликация: если уже есть заявка от этого телефона — обновляем, а не создаём
+    existing = storage.get_lead_by_phone(phone)
+    if existing is not None:
+        lead_id = existing["id"]
+    else:
+        lead_id = storage.create_lead(name, phone, who, subject, source="web")
     try:
         await _send_lead_to_manager(request.app["bot"], lead_id)
     except Exception as exc:  # важно для сайта: ответ даже если ТГ недоступен

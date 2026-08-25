@@ -169,6 +169,23 @@ def get_chat_lead(user_id: int) -> sqlite3.Row | None:
         ).fetchone()
 
 
+def get_lead_by_phone(phone: str) -> sqlite3.Row | None:
+    """Любая заявка по номеру телефона (для дедупликации с сайта)."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM leads WHERE phone = ? ORDER BY id DESC LIMIT 1",
+            (phone,),
+        ).fetchone()
+
+
+def count_unanswered() -> int:
+    """Число неотвеченных заявок (новых + чат, без повторов по телефону/id)."""
+    with _connect() as conn:
+        return int(conn.execute(
+            "SELECT COUNT(*) FROM leads WHERE status = 'new'"
+        ).fetchone()[0])
+
+
 def count_chat_clients() -> int:
     """Число клиентов, писавших боту (диалоги в темах)."""
     with _connect() as conn:

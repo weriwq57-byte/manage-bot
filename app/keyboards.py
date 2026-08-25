@@ -1,13 +1,37 @@
-"""Клавиатуры: меню менеджера, списки заявок, карточка заявки.
-
-Навигация: menu → leads:{filter}:{page} → lead:{id}:0 → назад.
-Фильтры: new (необработанные), done (обработанные), chat (из чата).
-"""
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+"""Клавиатуры: reply-меню менеджера, inline-списки заявок, карточка заявки."""
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 
 PAGE_SIZE = 5
 
 
+# ---------------------------------------------------------------------------
+# Reply-клавиатура (постоянная внизу экрана)
+# ---------------------------------------------------------------------------
+def manager_reply_kb() -> ReplyKeyboardMarkup:
+    """Постоянные кнопки внизу для менеджера."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="📋 Заявки"),
+                KeyboardButton(text="💬 Неотвеченные"),
+            ],
+            [
+                KeyboardButton(text="👥 Ученики"),
+                KeyboardButton(text="❓ Помощь"),
+            ],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Inline-клавиатуры
+# ---------------------------------------------------------------------------
 def chat_message_kb(chat_user_id: int) -> InlineKeyboardMarkup:
     """Кнопка «✍️ Ответить» на пересланном сообщении клиента."""
     return InlineKeyboardMarkup(inline_keyboard=[[

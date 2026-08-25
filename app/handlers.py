@@ -1,13 +1,4 @@
-"""Обработчики: меню менеджера, заявки (новые/обработанные/чат), ответы.
-
-Меню (/start): inline-кнопки «🆕 Необработанные (N)», «✅ Обработанные»,
-«💬 Чат с клиентами (N)». Списки — по 5 заявок со стрелками. Карточка
-заявки: «✅ Обработана»/«↩️ Вернуть в работу», у чат-заявок ещё и
-«✍️ Ответить». Ответ — ЛЮБЫМ сообщением: текст, фото, гиф, стикер,
-голосовое, кружок, документ (копируется as is). Отмена — /cancel.
-
-Гость бота: его сообщение пересылается менеджеру с кнопкой «✍️ Ответить».
-"""
+"""Обработчики: reply-меню менеджера, заявки, ответы, клиентский чат."""
 import logging
 
 from aiogram import F, Router
@@ -25,16 +16,12 @@ from .keyboards import (
     lead_card_kb,
     leads_list_kb,
     manager_menu_kb,
+    manager_reply_kb,
 )
 
 log = logging.getLogger("manage_bot.handlers")
 
 router = Router()
-
-LEAD_FILTERS = ("new", "done", "chat")
-
-# FSM для ответа; last_filter — откуда пришли, чтобы вернуться
-FILTER_STATE = "last_filter"
 
 
 class ReplyStates(StatesGroup):
@@ -73,15 +60,20 @@ def _filter_label(filter_: str) -> str:
 
 
 async def _send_menu(message: Message) -> None:
-    """Меню менеджера с живыми счётчиками."""
-    new_count = storage.count_leads(status="new")
-    chat_count = storage.count_leads(source="chat")
+    """Меню менеджера с inline-кнопками + reply-клавиатура внизу."""
+    new_count = storage.count_unanswered()
+    chat_count = storage.count_chat_clients()
     await message.answer(
-        "Меню менеджера. Клиенты пишут боту — их сообщения сюда.",
+        f"Меню менеджера\n"
+        f"📬 Неотвеченных: {new_count}\n"
+        f"💬 Чатов: {chat_count}",
         reply_markup=manager_menu_kb(new_count, chat_count),
     )
 
 
+# ---------------------------------------------------------------------------
+# /start, reply-кнопки (📋 Заявки, 💬 Неотвеченные, 👥 Ученики, ❓ Помощь)
+# ---------------------------------------------------------------------------
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     if not _is_manager(message.from_user.id):
@@ -90,6 +82,7 @@ async def cmd_start(message: Message) -> None:
             "свой вопрос или оставь контакт."
         )
         return
+    await message.answer("Добро пожаловать!", reply_markup=manager_reply_kb())
     await _send_menu(message)
 
 
@@ -99,38 +92,6 @@ async def cmd_help(message: Message) -> None:
         await _send_menu(message)
     else:
         await cmd_start(message)
-
-
-@router.message(Command("leads"))
-async def cmd_leads(message: Message, state: FSMContext) -> None:
-    """Список свежих заявок: необработанные, потом — из чата."""
-    if not _is_manager(message.from_user.id):
-        return
-    await state.update_data(last_filter="new")
-    await _show_leads(message, "new", 0)
-
-
-@router.message(Command("roster"))
-async def cmd_roster(message: Message) -> None:
-    """Список учеников из БД LevelUp + CSV-файл."""
-    if not _is_manager(message.from_user.id):
-        return
-    rows = roster_svc.fetch_roster()
-    if not rows:
-        await message.answer(
-            "Не удалось прочитать БД LevelUp или там нет учеников. "
-            "Проверь LEVELUP_DATABASE_URL в .env."
-        )
-        return
-    text = roster_svc.roster_text(rows)
-    if len(text) > 3900:
-        text = text[:3900] + "…"
-    await message.answer(text)
-    await message.answer_document(
-        BufferedInputFile(
-            roster_svc.roster_csv(rows), filename="levelup_ученики.csv"
-        )
-    )
 
 
 @router.message(Command("cancel"))
@@ -144,11 +105,71 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
         await message.answer("Я и так никому не отвечаю 🙂")
 
 
+@router.message(F.text == "📋 Заявки")
+async def btn_leads(message: Message, state: FSMContext) -> None:
+    if not _is_manager(message.from_user.id):
+        return
+    await state.update_data(last_filter="new")
+    await _show_leads(message, "new", 0)
+
+
+@router.message(F.text == "💬 Неотвеченные")
+async def btn_unanswered(message: Message, state: FSMContext) -> None:
+    if not _is_manager(message.from_user.id):
+        return
+    leads = storage.list_leads(limit=100, status="new")
+    total = len(leads)
+    if total == 0:
+        await message.answer("Все обработаны! Нет неотвеченных заявок.")
+        return
+    lines = [f"💬 Неотвеченные — {total}:", ""]
+    for lead in leads[:5]:
+        lines.append(f"🆕 #{lead['id']} {lead['name']} · {lead['created_at']}")
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=leads_list_kb(leads[:5], "new", 0, total),
+    )
+
+
+@router.message(F.text == "👥 Ученики")
+async def btn_roster(message: Message) -> None:
+    if not _is_manager(message.from_user.id):
+        return
+    rows = roster_svc.fetch_roster()
+    if not rows:
+        await message.answer("Нет данных или БД недоступна.")
+        return
+    text = roster_svc.roster_text(rows)
+    if len(text) > 3900:
+        text = text[:3900] + "…"
+    await message.answer(text)
+    await message.answer_document(
+        BufferedInputFile(
+            roster_svc.roster_csv(rows), filename="levelup_ученики.csv"
+        )
+    )
+
+
+@router.message(F.text == "❓ Помощь")
+async def btn_help(message: Message) -> None:
+    if not _is_manager(message.from_user.id):
+        return
+    await message.answer(
+        "Команды менеджера:\n\n"
+        "📋 Заявки — все заявки\n"
+        "💬 Неотвеченные — только новые\n"
+        "👥 Ученики — список из БД LevelUp\n"
+        "❌ Отмена — выйти из режима ответа\n\n"
+        "Ответ клиенту: нажми «✍️ Ответить» на его сообщении "
+        "и напиши ответ. Можно отправить текст, фото, стикер, "
+        "голосовое — всё дойдёт."
+    )
+
+
 # ---------------------------------------------------------------------------
-# Меню и списки заявок
+# Списки заявок (inline-кнопки)
 # ---------------------------------------------------------------------------
 async def _show_leads(message: Message, filter_: str, page: int) -> None:
-    """Печатает страницу заявок (5 шт.) по фильтру."""
     kwargs = {}
     if filter_ == "new":
         kwargs["status"] = "new"
@@ -184,10 +205,12 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext) -> None:
         return
     await callback.answer()
     await state.clear()
-    new_count = storage.count_leads(status="new")
-    chat_count = storage.count_leads(source="chat")
+    new_count = storage.count_unanswered()
+    chat_count = storage.count_chat_clients()
     await callback.message.edit_text(
-        "Меню менеджера. Клиенты пишут боту — их сообщения сюда.",
+        f"Меню менеджера\n"
+        f"📬 Неотвеченных: {new_count}\n"
+        f"💬 Чатов: {chat_count}",
         reply_markup=manager_menu_kb(new_count, chat_count),
     )
 
@@ -252,38 +275,33 @@ async def cb_lead_toggle(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Ответ клиенту (после «✍️ Ответить»)
+# Ответ клиенту
 # ---------------------------------------------------------------------------
 async def _enter_reply(callback: CallbackQuery, state: FSMContext, target: int) -> None:
-    """Включает режим ответа на клиента с tg id target."""
     if MANAGER_GROUP_ID is not None:
-        # Переписка ведётся в теме форум-группы — FSM не нужен
         thread = storage.get_thread(target)
         if thread is not None:
             await callback.answer()
             await callback.message.answer(
-                f"Переписка с клиентом идёт в теме «{thread['name']}» "
-                "в форум-группе — ответьте там."
+                f"Переписка в теме «{thread['name']}» в группе — ответьте там."
             )
         else:
             await callback.answer()
             await callback.message.answer(
-                "У этого клиента ещё нет темы: попросите его написать "
-                "боту (тогда тема создастся автоматически)."
+                "У этого клиента ещё нет темы — попросите его написать боту."
             )
         return
     await state.set_state(ReplyStates.waiting_reply)
     await state.update_data(reply_to=target)
     await callback.answer()
     await callback.message.answer(
-        "Жду ответ. Можно что угодно: текст, фото, гиф, стикер, "
-        "голосовое, кружок, документ. Отменить — /cancel"
+        "Жду ответ. Текст, фото, стикер, голосовое — всё дойдёт. "
+        "Отмена — /cancel"
     )
 
 
 @router.callback_query(F.data.regexp(r"^reply:(\d+):chat$"))
 async def cb_reply_from_lead(callback: CallbackQuery, state: FSMContext) -> None:
-    """«✍️ Ответить» из карточки чат-заявки: target — id клиента из поля phone."""
     if not _is_manager(callback.from_user.id):
         await callback.answer("Ты не менеджер", show_alert=True)
         return
@@ -297,7 +315,6 @@ async def cb_reply_from_lead(callback: CallbackQuery, state: FSMContext) -> None
 
 @router.callback_query(F.data.regexp(r"^reply:(\d+):0$"))
 async def cb_reply_direct(callback: CallbackQuery, state: FSMContext) -> None:
-    """«✍️ Ответить» с пересланного сообщения клиента: target — его tg id."""
     if not _is_manager(callback.from_user.id):
         await callback.answer("Ты не менеджер", show_alert=True)
         return
@@ -307,7 +324,6 @@ async def cb_reply_direct(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(ReplyStates.waiting_reply)
 async def manager_reply_any(message: Message, state: FSMContext) -> None:
-    """Ответ менеджера — любое сообщение уходит клиенту."""
     if not _is_manager(message.from_user.id):
         await state.clear()
         return
@@ -319,24 +335,20 @@ async def manager_reply_any(message: Message, state: FSMContext) -> None:
         return
     try:
         if message.text:
-            await message.bot.send_message(
-                target, f"💬 Менеджер: {message.text}"
-            )
+            await message.bot.send_message(target, message.text)
         else:
             await message.copy_to(target)
-        await message.answer(f"✅ Отправлено клиенту (id {target}).")
+        await message.answer(f"✅ Отправлено клиенту.")
     except Exception:
         await message.answer(
-            "Не удалось отправить — проверь, что клиент не "
-            "заблокировал бота и что медиа допустимо."
+            "Не удалось отправить — клиент мог заблокировать бота."
         )
 
 
 # ---------------------------------------------------------------------------
-# Клиент пишет боту / менеджер отвечает в теме форум-группы
+# Клиент пишет боту
 # ---------------------------------------------------------------------------
 async def _thread_deliver(message: Message, sender, text: str) -> None:
-    """Доставка сообщения клиента в тему форум-группы. Создаёт тему при первом."""
     thread = storage.get_thread(sender.id)
     if thread is None:
         created = await message.bot.create_forum_topic(
@@ -359,11 +371,7 @@ async def _thread_deliver(message: Message, sender, text: str) -> None:
 
 @router.message(F.chat.type == "private")
 async def any_message_for_manager(message: Message, state: FSMContext) -> None:
-    """Клиент пишет боту → создаём заявку и пересылаем менеджеру.
-
-    Если настроена форум-группа — сообщение уходит в тему клиента
-    (создаётся при первом сообщении). Иначе — в личный чат менеджера.
-    """
+    """Клиент пишет боту → заявка (без дублей) + пересылка менеджеру/в группу."""
     if _is_manager(message.from_user.id):
         await _send_menu(message)
         return
@@ -372,8 +380,10 @@ async def any_message_for_manager(message: Message, state: FSMContext) -> None:
     sender = message.from_user
     name = sender.full_name or str(sender.id)
     text = message.text or message.caption or "📎 (медиа)"
+
     lead = storage.get_chat_lead(sender.id)
-    if lead is None:
+    is_new = lead is None
+    if is_new:
         lead_id = storage.create_lead(name, str(sender.id), "", text, source="chat")
     else:
         lead_id = lead["id"]
@@ -381,13 +391,12 @@ async def any_message_for_manager(message: Message, state: FSMContext) -> None:
     if MANAGER_GROUP_ID is not None:
         await _thread_deliver(message, sender, text)
     else:
-        await message.bot.send_message(
-            MANAGER_TG_ID,
-            f"💬 Пишет клиент {name} (id {sender.id})",
-        )
+        if is_new:
+            await message.bot.send_message(
+                MANAGER_TG_ID,
+                f"💬 Новый клиент: {name} (id {sender.id})",
+            )
         try:
-            # копия ЛЮБОГО контента: фото, видео, гиф, стикер, голосовое,
-            # кружок, документ, аудио, локация…
             await message.copy_to(
                 MANAGER_TG_ID, reply_markup=chat_message_kb(sender.id)
             )
@@ -401,12 +410,7 @@ async def any_message_for_manager(message: Message, state: FSMContext) -> None:
 
 @router.message(F.chat.type.in_({"group", "supergroup"}))
 async def group_message(message: Message) -> None:
-    """Сообщения из групп: подсказка ID (до настройки) или ответ в теме."""
-    log.info("группа: chat=%s id=%s thread=%s from=%s",
-             message.chat.type, message.chat.id,
-             message.message_thread_id, message.from_user.id)
     if MANAGER_GROUP_ID is None:
-        # настройка: владелец создал группу, бот подскажет её ID
         await message.bot.send_message(
             MANAGER_TG_ID,
             "📎 Группа подключена. Добавь в .env:\n"
